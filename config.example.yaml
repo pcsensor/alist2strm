@@ -1,6 +1,17 @@
 # AList2STRM 配置文件
-# Web 服务端口 (默认 8383)
+# Web 服务监听端口 (默认 8383)
 port: 8383
+
+# Web 控制台管理员认证 (云服务器公网/域名访问必须开启)
+auth:
+  # 是否开启身份认证 (建议保持 true)
+  enabled: true
+  # 管理员用户名
+  username: admin
+  # 管理员密码 (首次启动默认为 adminadmin；登录后可在 Web 界面修改，会自动保存为 SHA256 哈希)
+  password: adminadmin
+  # 用于会话签名加盐的随机密钥 (自动生成)
+  secret: 
 
 # AList 连接设置
 alist:

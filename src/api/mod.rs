@@ -1,8 +1,10 @@
 use axum::{
     extract::{Path, State},
+    http::header,
+    middleware,
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse, Json,
+        IntoResponse, Json, Response,
     },
     routing::{get, post, put},
     Router,
@@ -15,6 +17,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use crate::alist::AlistClient;
+use crate::auth::{hash_password, require_admin_auth, verify_password, SessionManager};
 use crate::config::{AlistConfig, ConfigStore, StrmTaskConfig};
 use crate::task::{TaskManager, TaskRuntimeInfo};
 
@@ -22,22 +25,23 @@ use crate::task::{TaskManager, TaskRuntimeInfo};
 pub struct AppState {
     pub config_store: ConfigStore,
     pub task_manager: Arc<TaskManager>,
+    pub session_manager: Arc<SessionManager>,
 }
 
 #[derive(Serialize)]
-struct ApiResponse<T> {
+struct ApiResponse {
     success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<T>,
+    data: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
-impl<T: Serialize> ApiResponse<T> {
-    fn ok(data: T) -> Json<Self> {
+impl ApiResponse {
+    fn ok<T: Serialize>(data: T) -> Json<Self> {
         Json(Self {
             success: true,
-            data: Some(data),
+            data: serde_json::to_value(data).ok(),
             error: None,
         })
     }
@@ -52,8 +56,16 @@ impl<T: Serialize> ApiResponse<T> {
 }
 
 pub fn create_api_routes(state: AppState) -> Router {
-    Router::new()
+    // 公开接口（无需登录）
+    let public_routes = Router::new()
         .route("/api/status", get(get_status))
+        .route("/api/auth/me", get(get_auth_me))
+        .route("/api/auth/login", post(login));
+
+    // 受保护接口（必须管理员鉴权）
+    let protected_routes = Router::new()
+        .route("/api/auth/logout", post(logout))
+        .route("/api/auth/password", post(change_password))
         .route("/api/config", get(get_config).post(update_config))
         .route("/api/alist/test", post(test_alist))
         .route("/api/tasks", get(list_tasks).post(create_task))
@@ -63,6 +75,14 @@ pub fn create_api_routes(state: AppState) -> Router {
         )
         .route("/api/tasks/:id/run", post(run_task_manually))
         .route("/api/tasks/events", get(sse_task_events))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_auth,
+        ));
+
+    Router::new()
+        .merge(public_routes)
+        .merge(protected_routes)
         .with_state(state)
 }
 
@@ -73,6 +93,144 @@ async fn get_status() -> impl IntoResponse {
         "status": "online"
     }))
 }
+
+// ----------------- 认证相关 API -----------------
+
+#[derive(Deserialize)]
+struct LoginReq {
+    username: String,
+    password: String,
+}
+
+async fn login(
+    State(state): State<AppState>,
+    Json(payload): Json<LoginReq>,
+) -> Response {
+    let cfg = state.config_store.get().await;
+
+    if !cfg.auth.enabled {
+        let token = state.session_manager.create_token().await;
+        return (
+            [(header::SET_COOKIE, format!("auth_token={}; Path=/; HttpOnly; SameSite=Lax", token))],
+            ApiResponse::ok(serde_json::json!({
+                "token": token,
+                "username": cfg.auth.username,
+            })),
+        )
+            .into_response();
+    }
+
+    if payload.username.trim() == cfg.auth.username
+        && verify_password(&payload.password, &cfg.auth.password, &cfg.auth.secret)
+    {
+        let token = state.session_manager.create_token().await;
+        (
+            [(header::SET_COOKIE, format!("auth_token={}; Path=/; HttpOnly; SameSite=Lax", token))],
+            ApiResponse::ok(serde_json::json!({
+                "token": token,
+                "username": cfg.auth.username,
+            })),
+        )
+            .into_response()
+    } else {
+        ApiResponse::err("用户名或密码错误").into_response()
+    }
+}
+
+async fn get_auth_me(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> impl IntoResponse {
+    let cfg = state.config_store.get().await;
+    if !cfg.auth.enabled {
+        return ApiResponse::ok(serde_json::json!({
+            "auth_enabled": false,
+            "logged_in": true,
+            "username": "admin",
+        }));
+    }
+
+    let mut is_logged_in = false;
+
+    if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
+        if let Ok(val) = auth_header.to_str() {
+            if val.starts_with("Bearer ") {
+                let token = val[7..].trim();
+                is_logged_in = state.session_manager.validate_token(token).await;
+            }
+        }
+    }
+
+    if !is_logged_in {
+        if let Some(cookie_header) = req.headers().get(header::COOKIE) {
+            if let Ok(val) = cookie_header.to_str() {
+                for part in val.split(';') {
+                    let pair: Vec<&str> = part.trim().split('=').collect();
+                    if pair.len() == 2 && pair[0] == "auth_token" {
+                        is_logged_in = state.session_manager.validate_token(pair[1]).await;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    ApiResponse::ok(serde_json::json!({
+        "auth_enabled": true,
+        "logged_in": is_logged_in,
+        "username": cfg.auth.username,
+    }))
+}
+
+async fn logout(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> impl IntoResponse {
+    if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
+        if let Ok(val) = auth_header.to_str() {
+            if val.starts_with("Bearer ") {
+                let token = val[7..].trim();
+                state.session_manager.revoke_token(token).await;
+            }
+        }
+    }
+    (
+        [(header::SET_COOKIE, "auth_token=; Path=/; Max-Age=0")],
+        ApiResponse::ok("已退出登录"),
+    )
+}
+
+#[derive(Deserialize)]
+struct ChangePasswordReq {
+    old_password: String,
+    new_password: String,
+}
+
+async fn change_password(
+    State(state): State<AppState>,
+    Json(payload): Json<ChangePasswordReq>,
+) -> impl IntoResponse {
+    let mut cfg = state.config_store.get().await;
+
+    if !verify_password(&payload.old_password, &cfg.auth.password, &cfg.auth.secret) {
+        return ApiResponse::err("旧密码验证失败");
+    }
+
+    if payload.new_password.trim().len() < 5 {
+        return ApiResponse::err("新密码长度不能少于 5 位");
+    }
+
+    let hashed = hash_password(payload.new_password.trim(), &cfg.auth.secret);
+    cfg.auth.password = hashed;
+
+    if let Err(e) = state.config_store.update(cfg).await {
+        return ApiResponse::err(e);
+    }
+
+    ApiResponse::ok("密码修改成功")
+}
+
+// ----------------- 配置与 AList API -----------------
 
 async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     let cfg = state.config_store.get().await;
@@ -120,6 +278,8 @@ async fn test_alist(Json(req): Json<AlistTestReq>) -> impl IntoResponse {
         Err(e) => ApiResponse::err(e),
     }
 }
+
+// ----------------- 任务管理 API -----------------
 
 #[derive(Serialize)]
 struct TaskViewItem {
@@ -226,7 +386,6 @@ async fn delete_task(
     ApiResponse::ok("删除成功")
 }
 
-/// 手动执行任务核心入口
 async fn run_task_manually(
     Path(id): Path<String>,
     State(state): State<AppState>,
@@ -237,7 +396,6 @@ async fn run_task_manually(
     }
 }
 
-/// SSE 实时进度与日志流
 async fn sse_task_events(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {

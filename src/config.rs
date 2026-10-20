@@ -8,9 +8,50 @@ pub struct AppConfig {
     #[serde(default = "default_server_port")]
     pub port: u16,
     #[serde(default)]
+    pub auth: AuthConfig,
+    #[serde(default)]
     pub alist: AlistConfig,
     #[serde(default)]
     pub tasks: Vec<StrmTaskConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    #[serde(default = "default_auth_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_admin_username")]
+    pub username: String,
+    #[serde(default = "default_admin_password")]
+    pub password: String,
+    #[serde(default = "default_secret")]
+    pub secret: String,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            username: default_admin_username(),
+            password: default_admin_password(),
+            secret: default_secret(),
+        }
+    }
+}
+
+fn default_auth_enabled() -> bool {
+    true
+}
+
+fn default_admin_username() -> String {
+    "admin".to_string()
+}
+
+fn default_admin_password() -> String {
+    "adminadmin".to_string()
+}
+
+fn default_secret() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 fn default_server_port() -> u16 {
@@ -103,6 +144,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             port: 8383,
+            auth: AuthConfig::default(),
             alist: AlistConfig::default(),
             tasks: vec![StrmTaskConfig {
                 id: uuid::Uuid::new_v4().to_string(),

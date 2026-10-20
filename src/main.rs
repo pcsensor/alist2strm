@@ -1,5 +1,6 @@
 mod alist;
 mod api;
+mod auth;
 mod config;
 mod strm;
 mod task;
@@ -43,6 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = args.port.unwrap_or(app_cfg.port);
 
     let task_manager = Arc::new(task::TaskManager::new(config_store.clone()));
+    let session_manager = Arc::new(auth::SessionManager::new());
 
     // 启动 Cron 定时调度器
     if let Err(e) = task_manager.reload_scheduler().await {
@@ -52,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = api::AppState {
         config_store,
         task_manager,
+        session_manager,
     };
 
     let cors = CorsLayer::new()

@@ -2,7 +2,7 @@
 
 专为 **AList 挂载的 302 模式网盘（如百度网盘、115、阿里云盘等）** 打造的高性能、超轻量 `.strm` 文件生成与管理工具，适合家庭 NAS 与云服务器（VPS）低内存部署。
 
-本项目参考并派生自开源项目 [AutoFilm](https://github.com/AkimioJR/AutoFilm) 的核心 STRM 生成与路径解析算法，重构为具备现代化 WebUI、支持手动即时触发、极低内存开销的单二进制云原生工具。
+本项目参考并派生自开源项目 [AutoFilm](https://github.com/AkimioJR/AutoFilm) 的核心 STRM 生成与路径解析算法，重构为具备现代化 WebUI、支持管理员身份验证、支持手动即时触发、极低内存开销的单二进制云原生工具。
 
 ---
 
@@ -14,6 +14,7 @@
 - **重构与差异说明**：
   - **专注于 STRM 核心**：完全剥离了原项目中的动漫追番（ANI RSS）和媒体库海报绘制模块，专注于解决影视资源的高效扫描与 STRM 同步。
   - **全功能 Web 控制台**：补充了原项目缺失的可视化界面，支持任务可视化管理、连接测试与实时 SSE 日志流。
+  - **支持管理员身份认证**：内置安全登录拦截中间件与密码修改，确保云服务器通过域名暴露至公网时的安全性。
   - **支持手动立即触发**：支持在 Web 界面随时点击「▶ 立即运行」，摆脱只能依赖 Cron 轮询的限制。
   - **单文件交付与轻量化**：Vue 3 前端静态资产直接内嵌至单一 Rust 二进制程序中，空闲内存仅约 10MB-18MB，大幅降低云服务器部署门槛。
 - **开源协议**：
@@ -25,25 +26,68 @@
 
 ---
 
-## ✨ 核心特性
+## 🔐 管理员身份认证 (Security)
 
-- 🎬 **专为 302 网盘（百度网盘）量身定制**：
-  - 生成 `AlistURL` 格式直链（`/d/...` 并带签名 sign 与路径转义）；
-  - 播放器（Emby/Jellyfin/Plex/Infuse）请求时，由 AList 动态实时 302 跳转至百度网盘最新临时直链，**播放永不失效、无需担心直链过期**。
-  - 支持配置公网外部访问地址 (`public_url`)，方便内外网无缝切换。
-- ⚡ **完备的 WebUI 控制台**：
-  - 任务配置可视化创建、修改、一键删除；
-  - **核心痛点解决**：支持随时点击 **「▶ 立即运行」** 手动触发扫描，无需傻等 Cron 周期；
-  - 内置 **SSE 实时流终端**，毫秒级滚屏查看扫描进度、已处理文件数与错误详情。
-- ⏳ **灵活的调度策略**：
-  - 支持标准的 6 段式 Cron 定时任务（如 `0 0 3 * * *` 每天凌晨自动同步增量）。
-  - 支持智能增量跳过（本地已存在的文件秒级跳过，避免重复写盘与频繁请求云盘）。
-- 💿 **BDMV 蓝光原盘智能折叠**：
-  - 自动识别 `/BDMV/STREAM/` 目录结构，自动挑选体积最大的正片 `.m2ts` 生成单个电影标题 `.strm`，彻底解决媒体库刮削混乱问题。
-- 🚀 **极度轻量，专为云服务器优化**：
-  - **单二进制自包含**：前端静态资源直接打包内嵌进二进制中，无需额外安装 Node.js、Nginx 或 Python。
-  - **极低资源开销**：空闲运行时内存仅 **约 10MB - 18MB**，即便在 1C1G 的廉价 VPS 上也能流畅无感运行。
-  - **超轻量 Docker**：镜像体积小于 25MB。
+为了保护公网/域名访问安全，系统默认开启了管理员鉴权保护：
+- **默认管理员账号**：`admin`
+- **默认管理员密码**：`adminadmin`
+- **修改密码**：
+  - 登录后点击右上角用户名下拉菜单中的 **「🔑 修改管理员密码」**，修改后系统会自动计算加盐 SHA256 保存至 `config.yaml`。
+  - 亦可直接在 `config.yaml` 文件的 `auth:` 段中修改账号与密码。
+
+---
+
+## 🌐 云服务器域名访问与反向代理 (Nginx / Caddy)
+
+当部署在云服务器并通过域名（例如 `strm.yourdomain.com`）访问时，建议配置 Nginx 或 Caddy 进行 HTTPS 反代。
+
+> [!IMPORTANT]
+> **关键配置**：由于 Web 控制台集成了 **SSE 实时日志流**，反向代理时必须关闭缓冲（`proxy_buffering off;`），否则实时滚屏日志会出现延迟或卡顿。
+
+### 1. Nginx 反代配置示例
+
+```nginx
+server {
+    listen 80;
+    server_name strm.yourdomain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name strm.yourdomain.com;
+
+    # SSL 证书配置
+    ssl_certificate /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8383;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 支持 SSE 实时日志流不被 Nginx 缓存
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header Connection '';
+        proxy_http_version 1.1;
+        chunked_transfer_encoding off;
+        proxy_read_timeout 86400s;
+    }
+}
+```
+
+### 2. Caddy 反代配置示例
+
+```caddy
+strm.yourdomain.com {
+    reverse_proxy 127.0.0.1:8383 {
+        flush_interval -1
+    }
+}
+```
 
 ---
 
@@ -75,7 +119,7 @@ services:
 ```bash
 docker compose up -d
 ```
-启动后，浏览器打开 `http://<你的服务器IP>:8383` 即可进入控制台。
+启动后，浏览器打开 `http://<你的服务器IP或域名>:8383` 即可进入登录页面。
 
 ---
 
@@ -108,13 +152,14 @@ nohup ./alist2strm > alist2strm.log 2>&1 &
 
 ## 🧪 自动化测试
 
-项目内置完整的单元测试与集成测试（使用模拟 AList 服务端进行端到端全链路验证）：
+项目内置完整的单元测试与集成测试：
 
 ```bash
 cargo test
 ```
 包含：
+- 管理员认证与安全拦截流程测试（401 拦截、正确/错误密码登录、Bearer 验证、修改密码）
 - AList URL 与签名生成规范测试
 - BDMV 蓝光原盘折叠识别与主片选取测试
 - 增量跳过与孤立文件清理测试
-- AList API 连接与目录递归扫描模拟测试
+- AList API 连接与目录递归扫描端到端仿真测试
