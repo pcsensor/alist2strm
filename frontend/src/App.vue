@@ -213,7 +213,7 @@
       </main>
 
       <!-- AList 配置弹窗 -->
-      <div v-if="showAlistModal" class="modal-overlay" @click.self="showAlistModal = false">
+      <div v-if="showAlistModal" class="modal-overlay">
         <div class="modal-content">
           <div class="modal-header">
             <h3>AList 凭证与连接配置</h3>
@@ -255,7 +255,7 @@
       </div>
 
       <!-- 任务新建/编辑弹窗 -->
-      <div v-if="showTaskModal" class="modal-overlay" @click.self="showTaskModal = false">
+      <div v-if="showTaskModal" class="modal-overlay">
         <div class="modal-content">
           <div class="modal-header">
             <h3>{{ editingTaskId ? '编辑 STRM 任务' : '新建 STRM 任务' }}</h3>
@@ -316,7 +316,7 @@
       </div>
 
       <!-- 修改密码弹窗 -->
-      <div v-if="showPasswordModal" class="modal-overlay" @click.self="showPasswordModal = false">
+      <div v-if="showPasswordModal" class="modal-overlay">
         <div class="modal-content" style="max-width: 450px;">
           <div class="modal-header">
             <h3>修改管理员密码</h3>
