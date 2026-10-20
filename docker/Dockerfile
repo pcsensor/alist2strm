@@ -8,7 +8,8 @@ COPY frontend ./
 RUN npm run build
 
 FROM rust:alpine AS backend-builder
-RUN apk add --no-cache musl-dev
+# gcc 用于编译 rusqlite bundled 的 SQLite C 源码
+RUN apk add --no-cache musl-dev gcc
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src

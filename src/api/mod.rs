@@ -6,7 +6,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Json, Response,
     },
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
     Router,
 };
 use futures_util::stream::Stream;
@@ -70,7 +70,10 @@ pub fn create_api_routes(state: AppState) -> Router {
         .route("/api/config", get(get_config).post(update_config))
         .route("/api/alist/test", post(test_alist))
         .route("/api/tasks", get(list_tasks).post(create_task))
-        .route("/api/tasks/logs", delete(clear_all_task_logs))
+        .route(
+            "/api/tasks/logs",
+            get(get_all_task_logs).delete(clear_all_task_logs),
+        )
         .route(
             "/api/tasks/:id/logs",
             get(get_task_logs).delete(clear_task_logs),
@@ -441,7 +444,7 @@ async fn delete_task(
         return ApiResponse::err(e);
     }
 
-    state.task_manager.log_store().clear(&id);
+    state.task_manager.log_store().clear_task(&id);
     let _ = state.task_manager.reload_scheduler().await;
     ApiResponse::ok("删除成功")
 }
@@ -458,14 +461,22 @@ async fn get_task_logs(
 ) -> impl IntoResponse {
     let limit = query.limit.unwrap_or(500).clamp(1, 2000);
     let store = state.task_manager.log_store().clone();
-    let task_id = id.clone();
 
-    match tokio::task::spawn_blocking(move || store.read_tail(&id, limit)).await {
-        Ok((logs, truncated)) => ApiResponse::ok(serde_json::json!({
-            "task_id": task_id,
-            "logs": logs,
-            "truncated": truncated,
-        })),
+    match tokio::task::spawn_blocking(move || store.read_task(&id, limit)).await {
+        Ok(result) => ApiResponse::ok(result),
+        Err(e) => ApiResponse::err(format!("读取任务日志失败: {}", e)),
+    }
+}
+
+async fn get_all_task_logs(
+    Query(query): Query<TaskLogQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(500).clamp(1, 2000);
+    let store = state.task_manager.log_store().clone();
+
+    match tokio::task::spawn_blocking(move || store.read_all(limit)).await {
+        Ok(result) => ApiResponse::ok(result),
         Err(e) => ApiResponse::err(format!("读取任务日志失败: {}", e)),
     }
 }
@@ -474,12 +485,14 @@ async fn clear_task_logs(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    state.task_manager.log_store().clear(&id);
+    let store = state.task_manager.log_store().clone();
+    let _ = tokio::task::spawn_blocking(move || store.clear_task(&id)).await;
     ApiResponse::ok("日志已清空")
 }
 
 async fn clear_all_task_logs(State(state): State<AppState>) -> impl IntoResponse {
-    state.task_manager.log_store().clear_all();
+    let store = state.task_manager.log_store().clone();
+    let _ = tokio::task::spawn_blocking(move || store.clear_all()).await;
     ApiResponse::ok("所有任务日志已清空")
 }
 

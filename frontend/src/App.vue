@@ -211,10 +211,20 @@
                 ? '等待任务触发... 点击上方「立即运行」即可在此查看实时扫描进度。'
                 : `「${taskName(logFilter)}」暂无日志，运行一次任务后再来看看。` }}
             </div>
-            <div v-for="(item, idx) in logs" :key="idx" class="terminal-line">
-              <span v-if="logFilter === 'all' && item.task_id" class="terminal-task">[{{ taskName(item.task_id) }}]</span>
-              <span v-if="item.time" class="terminal-time">[{{ item.time }}]</span>
-              <span class="terminal-msg">{{ item.message }}</span>
+            <div
+              v-for="(item, idx) in logs"
+              :key="item.id || idx"
+              class="terminal-line"
+              :class="{ 'terminal-run-sep': item.kind === 'run_start' }"
+            >
+              <template v-if="item.kind === 'run_start'">
+                <span class="terminal-sep">──── {{ formatLogTime(item.time, true) }} 开始运行 ────</span>
+              </template>
+              <template v-else>
+                <span v-if="logFilter === 'all' && item.task_id" class="terminal-task">[{{ taskName(item.task_id) }}]</span>
+                <span v-if="item.time" class="terminal-time">[{{ formatLogTime(item.time) }}]</span>
+                <span class="terminal-msg">{{ item.message }}</span>
+              </template>
             </div>
           </div>
         </section>
@@ -383,6 +393,7 @@ const tasks = ref([])
 const logs = ref([])
 const logFilter = ref('all')
 const logHighlight = ref(false)
+const maxLogId = ref(0)
 const terminalBox = ref(null)
 
 const alistConnected = ref(false)
@@ -740,6 +751,8 @@ async function deleteTask(id) {
       if (logFilter.value === id) {
         logFilter.value = 'all'
         logs.value = []
+        maxLogId.value = 0
+        loadLogs()
       }
       loadTasks()
     }
@@ -773,6 +786,13 @@ function taskName(id) {
   return t ? t.name : (id ? id.slice(0, 8) : '未知任务')
 }
 
+// 后端返回 "YYYY-MM-DD HH:MM:SS"；单任务视图只显示时分秒
+function formatLogTime(time, withDate = false) {
+  if (!time) return ''
+  if (withDate || logFilter.value === 'all') return time.slice(5)
+  return time.slice(11)
+}
+
 function scrollTerminal() {
   nextTick(() => {
     if (terminalBox.value) {
@@ -781,13 +801,17 @@ function scrollTerminal() {
   })
 }
 
-// 从后端读取该任务的历史日志
-async function loadTaskLogs(id) {
+// 从 SQLite 读取当前筛选范围的日志
+async function loadLogs() {
   try {
-    const res = await apiFetch(`/api/tasks/${id}/logs?limit=500`)
+    const url = logFilter.value === 'all'
+      ? '/api/tasks/logs?limit=500'
+      : `/api/tasks/${logFilter.value}/logs?limit=500`
+    const res = await apiFetch(url)
     const json = await readJson(res)
     if (json.success) {
-      logs.value = (json.data.logs || []).map(l => ({ ...l, task_id: id }))
+      logs.value = json.data.logs || []
+      maxLogId.value = json.data.max_id || 0
       scrollTerminal()
     }
   } catch (e) {
@@ -797,9 +821,8 @@ async function loadTaskLogs(id) {
 
 async function onLogFilterChange() {
   logs.value = []
-  if (logFilter.value !== 'all') {
-    await loadTaskLogs(logFilter.value)
-  }
+  maxLogId.value = 0
+  await loadLogs()
   scrollTerminal()
 }
 
@@ -807,7 +830,8 @@ async function onLogFilterChange() {
 function openLogs(task) {
   logFilter.value = task.id
   logs.value = []
-  loadTaskLogs(task.id)
+  maxLogId.value = 0
+  loadLogs()
 
   nextTick(() => {
     const el = document.querySelector('.logs-section')
@@ -829,6 +853,7 @@ async function clearLogs() {
     const json = await readJson(res)
     if (json.success) {
       logs.value = []
+      maxLogId.value = 0
     } else {
       alert('清空失败: ' + json.error)
     }
@@ -848,9 +873,13 @@ function initSSE() {
     try {
       const data = JSON.parse(event.data)
       if (data.type === 'Log') {
-        // 只把当前筛选范围内的日志放进终端
-        if (logFilter.value !== 'all' && data.data.task_id !== logFilter.value) return
-        logs.value.push(data.data)
+        const item = data.data
+        // 只显示当前筛选范围内的日志
+        if (logFilter.value !== 'all' && item.task_id !== logFilter.value) return
+        // 拉取历史时已经包含的 id 不再重复追加
+        if (item.id && maxLogId.value && item.id <= maxLogId.value) return
+        logs.value.push(item)
+        if (item.id) maxLogId.value = Math.max(maxLogId.value, item.id)
         if (logs.value.length > 500) logs.value.shift()
         scrollTerminal()
       } else if (data.type === 'StatusChanged') {
@@ -892,6 +921,7 @@ function formatDate(d) {
 async function initDashboard() {
   await loadConfig()
   await loadTasks()
+  await loadLogs()
   testCurrentAlist()
   initSSE()
 }

@@ -153,6 +153,18 @@ input:focus, select:focus, textarea:focus {
   margin-right: 8px;
 }
 
+/* 运行分隔线 */
+.terminal-run-sep {
+  margin: 6px 0;
+  text-align: center;
+}
+
+.terminal-sep {
+  color: #475569;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
 /* 模态弹窗 */
 .modal-overlay {
   position: fixed;

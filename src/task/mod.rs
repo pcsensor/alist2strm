@@ -58,8 +58,10 @@ impl From<TaskStats> for SerializableTaskStats {
 #[serde(tag = "type", content = "data")]
 pub enum TaskEvent {
     Log {
+        id: i64,
         task_id: String,
         time: String,
+        kind: String,
         message: String,
     },
     StatusChanged {
@@ -82,18 +84,18 @@ pub struct TaskManager {
 impl TaskManager {
     pub fn new(config_store: ConfigStore) -> Self {
         let (tx, _) = broadcast::channel(1000);
-        let log_dir = config_store
+        let log_db_path = config_store
             .file_path
             .parent()
-            .map(|p| p.join("logs"))
-            .unwrap_or_else(|| std::path::PathBuf::from("logs"));
+            .map(|p| p.join("task_logs.db"))
+            .unwrap_or_else(|| std::path::PathBuf::from("task_logs.db"));
 
         Self {
             config_store,
             runtime_states: Arc::new(RwLock::new(HashMap::new())),
             event_sender: tx,
             scheduler: Arc::new(RwLock::new(None)),
-            log_store: TaskLogStore::new(log_dir),
+            log_store: TaskLogStore::new(log_db_path),
         }
     }
 
@@ -196,16 +198,26 @@ impl TaskManager {
         let log_store = self.log_store.clone();
 
         // 先写运行分隔线，再开始记录
-        self.log_store.begin_run(&task_id);
+        if let Some((id, time)) = self.log_store.begin_run(&task_id) {
+            let _ = tx.send(TaskEvent::Log {
+                id,
+                task_id: task_id.clone(),
+                time,
+                kind: "run_start".to_string(),
+                message: "开始运行".to_string(),
+            });
+        }
 
         let log_cb = move |msg: String| {
-            let time_str = Local::now().format("%H:%M:%S").to_string();
-            log_store.append(&tid_for_log, &time_str, &msg);
-            let _ = tx.send(TaskEvent::Log {
-                task_id: tid_for_log.clone(),
-                time: time_str,
-                message: msg,
-            });
+            if let Some((id, time)) = log_store.append(&tid_for_log, "log", &msg) {
+                let _ = tx.send(TaskEvent::Log {
+                    id,
+                    task_id: tid_for_log.clone(),
+                    time,
+                    kind: "log".to_string(),
+                    message: msg,
+                });
+            }
         };
 
         let result = async {
@@ -254,12 +266,16 @@ impl TaskManager {
             }
             Err(err) => {
                 error!("任务 {} 执行出错: {}", task_id, err);
-                let time_str = Local::now().format("%H:%M:%S").to_string();
-                let _ = self.event_sender.send(TaskEvent::Log {
-                    task_id: task_id.clone(),
-                    time: time_str,
-                    message: format!("❌ 任务失败: {}", err),
-                });
+                let fail_msg = format!("❌ 任务失败: {}", err);
+                if let Some((id, time)) = self.log_store.append(&task_id, "log", &fail_msg) {
+                    let _ = self.event_sender.send(TaskEvent::Log {
+                        id,
+                        task_id: task_id.clone(),
+                        time,
+                        kind: "log".to_string(),
+                        message: fail_msg,
+                    });
+                }
 
                 info.status = TaskRunStatus::Failed;
                 info.last_error = Some(err.clone());
