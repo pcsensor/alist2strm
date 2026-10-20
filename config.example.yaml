@@ -1,0 +1,47 @@
+# AList2STRM 配置文件
+# Web 服务端口 (默认 8383)
+port: 8383
+
+# AList 连接设置
+alist:
+  # AList 服务端内部访问地址
+  base_url: http://127.0.0.1:5244
+  # 公网/外部播放地址（选填；如果 Emby 在外部网络播放，填入你的公网域名如 https://alist.mydomain.com:5244，STRM 内将自动替换为该域名）
+  public_url: 
+  # AList 令牌 (在 AList 管理面板「设置 -> 其他 -> 令牌」中获取)
+  token: alist-your-token-here
+  # 每次请求 AList 接口后的休眠等待时间（秒，防止扫描过快导致百度网盘 429 限流）
+  wait_time: 0.05
+
+# 同步任务列表（每个任务可关联不同目录或定时规则）
+tasks:
+  - id: baidu-movies-task
+    name: 百度网盘电影
+    # 定时任务表达式 (秒 分 时 日 月 星期)，如每天凌晨 3 点执行：0 0 3 * * *；若为空则仅允许手动在 WebUI 点击执行
+    cron: 0 0 3 * * *
+    # AList 上的源路径（以 / 开头）
+    source_dir: /百度网盘/电影
+    # 本地存放 .strm 文件的目标目录
+    target_dir: /media/movies
+    # 模式选择：AlistURL (强烈推荐！专为百度网盘302设计，带签名，永不失效) 或 RawURL (直接提取临时直链)
+    mode: AlistURL
+    # 是否覆盖已有同名文件 (false 表示智能增量跳过，秒级完成同步；true 表示全量重新写入)
+    overwrite: false
+    # 是否平铺输出（false 保持远端完整多级目录树；true 将所有 .strm 输出到同一层）
+    flatten: false
+    # 扫描与写文件的最大并发数
+    concurrency: 10
+    # 同步清理：如果远端已被删除，本地残留的 .strm 是否同步清理
+    sync_delete: false
+    # 视频识别后缀
+    video_extensions:
+      - .mp4
+      - .mkv
+      - .avi
+      - .ts
+      - .iso
+      - .mov
+      - .wmv
+      - .m2ts
+      - .webm
+      - .rmvb

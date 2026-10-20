@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  alist2strm:
+    image: alist2strm:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: alist2strm
+    restart: unless-stopped
+    ports:
+      - "8383:8383"   # WebUI 访问端口
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./config:/config       # 配置文件与数据库持久化路径
+      - /mnt/media:/media      # 生成的 STRM 目录，供 Emby / Jellyfin 挂载
