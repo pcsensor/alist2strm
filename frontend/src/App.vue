@@ -419,11 +419,22 @@ async function apiFetch(url, options = {}) {
   return res
 }
 
+// 解析响应体：后端参数校验失败时（如 422）返回的是 text/plain，
+// 直接 res.json() 会抛 "Unexpected token ..."，这里转成可读的错误信息。
+async function readJson(res) {
+  const text = await res.text()
+  try {
+    return text ? JSON.parse(text) : {}
+  } catch {
+    throw new Error(`服务器返回非 JSON 响应 (HTTP ${res.status}): ${text.slice(0, 200)}`)
+  }
+}
+
 // 检查认证状态
 async function checkAuth() {
   try {
     const res = await apiFetch('/api/auth/me')
-    const json = await res.json()
+    const json = await readJson(res)
     if (json.success) {
       authEnabled.value = json.data.auth_enabled
       authInitialized.value = json.data.initialized
@@ -461,7 +472,7 @@ async function handleInitAdmin() {
         password: initForm.value.password.trim()
       })
     })
-    const json = await res.json()
+    const json = await readJson(res)
     if (json.success) {
       localStorage.setItem('admin_token', json.data.token)
       currentUsername.value = json.data.username
@@ -489,7 +500,7 @@ async function handleLogin() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(loginForm.value)
     })
-    const json = await res.json()
+    const json = await readJson(res)
     if (json.success) {
       localStorage.setItem('admin_token', json.data.token)
       currentUsername.value = json.data.username
@@ -532,7 +543,7 @@ async function handleChangePassword() {
         new_password: pwdForm.value.new_password
       })
     })
-    const json = await res.json()
+    const json = await readJson(res)
     if (json.success) {
       alert('密码修改成功，请牢记新密码！')
       showPasswordModal.value = false
@@ -549,7 +560,7 @@ async function handleChangePassword() {
 async function loadConfig() {
   try {
     const res = await apiFetch('/api/config')
-    const json = await res.json()
+    const json = await readJson(res)
     if (json.success) {
       appConfig.value = json.data
       editAlist.value = { ...json.data.alist }
@@ -563,7 +574,7 @@ async function loadConfig() {
 async function loadTasks() {
   try {
     const res = await apiFetch('/api/tasks')
-    const json = await res.json()
+    const json = await readJson(res)
     if (json.success) {
       tasks.value = json.data
     }
@@ -583,7 +594,7 @@ async function testCurrentAlist() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(appConfig.value.alist)
     })
-    const json = await res.json()
+    const json = await readJson(res)
     if (json.success && json.data.connected) {
       alistConnected.value = true
       alistUser.value = json.data.username
@@ -610,7 +621,7 @@ async function testAlistConfig() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(editAlist.value)
     })
-    const json = await res.json()
+    const json = await readJson(res)
     if (json.success && json.data.connected) {
       testResult.value = { success: true, message: `✅ 连接成功！用户: ${json.data.username}，根路径: ${json.data.base_path}` }
     } else {
@@ -631,7 +642,7 @@ async function saveAlistConfig() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ alist: editAlist.value })
     })
-    const json = await res.json()
+    const json = await readJson(res)
     if (json.success) {
       showAlistModal.value = false
       await loadConfig()
@@ -697,7 +708,7 @@ async function saveTask() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(taskForm.value)
     })
-    const json = await res.json()
+    const json = await readJson(res)
     if (json.success) {
       showTaskModal.value = false
       loadTasks()
@@ -714,7 +725,7 @@ async function deleteTask(id) {
   if (!confirm('确定删除该任务吗？不会影响本地已生成的 STRM 文件')) return
   try {
     const res = await apiFetch(`/api/tasks/${id}`, { method: 'DELETE' })
-    const json = await res.json()
+    const json = await readJson(res)
     if (json.success) {
       loadTasks()
     }
@@ -727,7 +738,7 @@ async function deleteTask(id) {
 async function triggerTask(id) {
   try {
     const res = await apiFetch(`/api/tasks/${id}/run`, { method: 'POST' })
-    const json = await res.json()
+    const json = await readJson(res)
     if (!json.success) {
       alert('启动任务失败: ' + json.error)
     } else {

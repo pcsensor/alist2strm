@@ -100,6 +100,9 @@ impl Default for StrmMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrmTaskConfig {
+    /// 新建任务时允许不传，服务端会自动生成 UUID；
+    /// 编辑任务时由路径参数覆盖，因此这里也必须允许缺省。
+    #[serde(default)]
     pub id: String,
     pub name: String,
     #[serde(default)]
@@ -217,5 +220,43 @@ impl ConfigStore {
         let mut lock = self.config.write().await;
         *lock = new_config;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TASK_JSON_WITHOUT_ID: &str = r#"{
+        "name": "百度网盘电视剧",
+        "source_dir": "/baidu/last/影视/jellyfin/电视剧",
+        "target_dir": "/media/alist2strm_电视剧",
+        "mode": "AlistURL",
+        "cron": "",
+        "concurrency": 10,
+        "overwrite": false,
+        "sync_delete": false,
+        "flatten": false,
+        "video_extensions": [".mp4", ".mkv"]
+    }"#;
+
+    #[test]
+    fn task_config_allows_missing_id() {
+        let task: StrmTaskConfig =
+            serde_json::from_str(TASK_JSON_WITHOUT_ID).expect("缺少 id 时应当能反序列化");
+
+        assert!(task.id.is_empty());
+        assert_eq!(task.name, "百度网盘电视剧");
+        assert_eq!(task.mode, StrmMode::AlistURL);
+        assert_eq!(task.concurrency, 10);
+    }
+
+    #[test]
+    fn task_config_keeps_existing_id() {
+        let json = r#"{"id":"task-1","name":"测试","source_dir":"/a","target_dir":"/b"}"#;
+        let task: StrmTaskConfig = serde_json::from_str(json).expect("应当能反序列化");
+
+        assert_eq!(task.id, "task-1");
+        assert_eq!(task.video_extensions, default_video_extensions());
     }
 }
