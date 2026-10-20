@@ -1253,14 +1253,27 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   padding-top: 12px;
   border-top: 1px solid #334155;
 }
 
+/* 操作按钮：标签不换行，始终单行完整显示 */
+.task-card-footer .btn {
+  white-space: nowrap;
+  padding: 8px 10px;
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+.task-card-footer > .btn {
+  flex: 1 1 auto;
+}
+
 .footer-sub-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 .empty-state {
