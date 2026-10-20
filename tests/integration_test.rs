@@ -27,7 +27,8 @@ async fn test_full_strm_generation_pipeline() {
                     "data": {
                         "username": "admin",
                         "base_path": "/",
-                        "role": 2
+                        // 新版 AList beta 的 role 是数组（旧版整数格式由 alist.rs 单测覆盖）
+                        "role": [2]
                     }
                 }))
             }),

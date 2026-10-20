@@ -20,12 +20,24 @@ pub struct AlistResponse<T> {
     pub data: Option<T>,
 }
 
+/// AList 的 `role` 字段兼容层。
+///
+/// 旧版本返回单个整数（如 `"role": 2`），新版 beta（支持多角色）返回数组
+/// （如 `"role": [2]`）。两种格式都接受，避免升级 AList 后 `/api/me`
+/// 反序列化失败（表现为 `error decoding response body`）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AlistRole {
+    Single(i32),
+    Multiple(Vec<i32>),
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AlistUserInfo {
     pub username: Option<String>,
     #[serde(default = "default_base_path")]
     pub base_path: String,
-    pub role: Option<i32>,
+    pub role: Option<AlistRole>,
 }
 
 fn default_base_path() -> String {
@@ -131,10 +143,19 @@ impl AlistClient {
             return Err("认证失败：Token 无效或权限不足".to_string());
         }
 
-        let body: AlistResponse<AlistUserInfo> = resp
-            .json()
-            .await
-            .map_err(|e| format!("解析 AList 用户信息响应失败: {}", e))?;
+        let body: AlistResponse<AlistUserInfo> = {
+            let body_text = resp
+                .text()
+                .await
+                .map_err(|e| format!("读取 AList 用户信息响应失败: {}", e))?;
+
+            serde_json::from_str(&body_text).map_err(|e| {
+                // reqwest 的 `.json()` 只会把错误显示成 "error decoding response body"，
+                // 这里保留 Serde 的具体原因和响应片段，方便排查字段变更。
+                let preview: String = body_text.chars().take(200).collect();
+                format!("解析 AList 用户信息响应失败: {}；响应内容: {}", e, preview)
+            })?
+        };
 
         if body.code != 200 {
             return Err(format!("AList 返回错误 ({}): {}", body.code, body.message));
@@ -238,5 +259,62 @@ impl AlistClient {
 
         body.data
             .ok_or_else(|| format!("未返回文件数据: {}", file_path))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_user_info(raw: &str) -> AlistUserInfo {
+        let resp: AlistResponse<AlistUserInfo> =
+            serde_json::from_str(raw).expect("用户信息响应应当解析成功");
+        assert_eq!(resp.code, 200);
+        resp.data.expect("响应应当包含 data")
+    }
+
+    #[test]
+    fn parses_legacy_single_role() {
+        let info = parse_user_info(
+            r#"{"code":200,"message":"success","data":{"id":1,"username":"admin","base_path":"/","role":2}}"#,
+        );
+
+        assert_eq!(info.username.as_deref(), Some("admin"));
+        assert_eq!(info.base_path, "/");
+        assert_eq!(info.role, Some(AlistRole::Single(2)));
+    }
+
+    #[test]
+    fn parses_beta_role_array() {
+        // 抓取自 AList beta（2026-10-13 构建）的真实响应
+        let info = parse_user_info(
+            r#"{"code":200,"message":"success","data":{"id":2,"username":"admin","password":"","base_path":"/","role":[2],"disabled":false,"permission":65535,"sso_id":"","otp":false,"role_names":null,"permissions":null}}"#,
+        );
+
+        assert_eq!(info.username.as_deref(), Some("admin"));
+        assert_eq!(info.base_path, "/");
+        assert_eq!(info.role, Some(AlistRole::Multiple(vec![2])));
+    }
+
+    #[test]
+    fn parses_multiple_roles() {
+        let info = parse_user_info(
+            r#"{"code":200,"message":"success","data":{"username":"admin","base_path":"/","role":[1,2]}}"#,
+        );
+
+        assert_eq!(info.role, Some(AlistRole::Multiple(vec![1, 2])));
+    }
+
+    #[test]
+    fn parses_missing_or_null_role() {
+        let missing = parse_user_info(
+            r#"{"code":200,"message":"success","data":{"username":"guest","base_path":"/"}}"#,
+        );
+        assert_eq!(missing.role, None);
+
+        let null = parse_user_info(
+            r#"{"code":200,"message":"success","data":{"username":"guest","base_path":"/","role":null}}"#,
+        );
+        assert_eq!(null.role, None);
     }
 }
