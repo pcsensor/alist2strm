@@ -8,10 +8,10 @@ use axum::{
 };
 use std::sync::Arc;
 use tempfile::tempdir;
-use tower::ServiceExt; // for oneshot
+use tower::util::ServiceExt;
 
 #[tokio::test]
-async fn test_admin_authentication_workflow() {
+async fn test_admin_initialization_and_auth_workflow() {
     let tmp = tempdir().unwrap();
     let cfg_path = tmp.path().join("config.yaml");
 
@@ -27,21 +27,25 @@ async fn test_admin_authentication_workflow() {
 
     let app = create_api_routes(state);
 
-    // 1. 未登录访问受保护接口，应当返回 401 Unauthorized
-    let res = app
+    // 1. 初次启动，查询 /api/auth/me，应处于未初始化状态 (initialized: false)
+    let me_res = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/tasks")
+                .uri("/api/auth/me")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(me_res.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(me_res.into_body(), usize::MAX).await.unwrap();
+    let me_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(me_json["data"]["initialized"], false);
+    assert_eq!(me_json["data"]["logged_in"], false);
 
-    // 2. 错误密码登录，返回失败
-    let login_bad = app
+    // 2. 未初始化时直接登录，应当被拒绝
+    let login_premature = app
         .clone()
         .oneshot(
             Request::builder()
@@ -51,7 +55,7 @@ async fn test_admin_authentication_workflow() {
                 .body(Body::from(
                     serde_json::to_string(&serde_json::json!({
                         "username": "admin",
-                        "password": "wrongpassword"
+                        "password": "any"
                     }))
                     .unwrap(),
                 ))
@@ -59,22 +63,22 @@ async fn test_admin_authentication_workflow() {
         )
         .await
         .unwrap();
-    let body_bytes = axum::body::to_bytes(login_bad.into_body(), usize::MAX).await.unwrap();
-    let bad_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(bad_json["success"], false);
+    let body_bytes = axum::body::to_bytes(login_premature.into_body(), usize::MAX).await.unwrap();
+    let premature_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(premature_json["success"], false);
 
-    // 3. 正确默认密码登录 (admin / adminadmin)
-    let login_good = app
+    // 3. 用户初次设置管理员账号和密码 (如 myadmin / mySecretPassword789)
+    let init_res = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/auth/login")
+                .uri("/api/auth/init")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_string(&serde_json::json!({
-                        "username": "admin",
-                        "password": "adminadmin"
+                        "username": "myadmin",
+                        "password": "mySecretPassword789"
                     }))
                     .unwrap(),
                 ))
@@ -82,13 +86,38 @@ async fn test_admin_authentication_workflow() {
         )
         .await
         .unwrap();
-    let body_bytes = axum::body::to_bytes(login_good.into_body(), usize::MAX).await.unwrap();
-    let good_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(good_json["success"], true);
-    let token = good_json["data"]["token"].as_str().unwrap().to_string();
+    assert_eq!(init_res.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(init_res.into_body(), usize::MAX).await.unwrap();
+    let init_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(init_json["success"], true);
+    assert_eq!(init_json["data"]["username"], "myadmin");
+    let token = init_json["data"]["token"].as_str().unwrap().to_string();
     assert!(!token.is_empty());
 
-    // 4. 携带 Bearer Token 访问受保护接口，应当成功返回 200
+    // 4. 重复初始化应当被拒绝
+    let init_repeat = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/init")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&serde_json::json!({
+                        "username": "hacker",
+                        "password": "hackerpassword"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body_bytes = axum::body::to_bytes(init_repeat.into_body(), usize::MAX).await.unwrap();
+    let repeat_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(repeat_json["success"], false);
+
+    // 5. 携带初始化获得的 Bearer Token 访问受保护接口
     let authed_res = app
         .clone()
         .oneshot(
@@ -102,30 +131,8 @@ async fn test_admin_authentication_workflow() {
         .unwrap();
     assert_eq!(authed_res.status(), StatusCode::OK);
 
-    // 5. 修改密码
-    let change_pwd_res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/auth/password")
-                .header(header::AUTHORIZATION, format!("Bearer {}", token))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    serde_json::to_string(&serde_json::json!({
-                        "old_password": "adminadmin",
-                        "new_password": "mynewpassword123"
-                    }))
-                    .unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(change_pwd_res.status(), StatusCode::OK);
-
-    // 6. 用新密码登录
-    let login_new = app
+    // 6. 用刚才新设置的用户名与密码正常登录
+    let login_custom = app
         .clone()
         .oneshot(
             Request::builder()
@@ -134,8 +141,8 @@ async fn test_admin_authentication_workflow() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_string(&serde_json::json!({
-                        "username": "admin",
-                        "password": "mynewpassword123"
+                        "username": "myadmin",
+                        "password": "mySecretPassword789"
                     }))
                     .unwrap(),
                 ))
@@ -143,9 +150,10 @@ async fn test_admin_authentication_workflow() {
         )
         .await
         .unwrap();
-    let body_bytes = axum::body::to_bytes(login_new.into_body(), usize::MAX).await.unwrap();
-    let new_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(new_json["success"], true);
+    let body_bytes = axum::body::to_bytes(login_custom.into_body(), usize::MAX).await.unwrap();
+    let custom_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(custom_json["success"], true);
+    assert_eq!(custom_json["data"]["username"], "myadmin");
 
-    println!("管理员认证核心流程测试全部通过！");
+    println!("初次由用户自定义设置管理员账号密码的完整流程测试全部通过！");
 }

@@ -6,10 +6,12 @@ port: 8383
 auth:
   # 是否开启身份认证 (建议保持 true)
   enabled: true
-  # 管理员用户名
-  username: admin
-  # 管理员密码 (首次启动默认为 adminadmin；登录后可在 Web 界面修改，会自动保存为 SHA256 哈希)
-  password: adminadmin
+  # 是否已完成初次设置（初次启动由用户在 Web 页面自行输入设置；亦可在此直接填入）
+  initialized: false
+  # 管理员用户名 (初次启动由用户自行输入；如需手动预设可在此填写)
+  username: 
+  # 管理员密码 (首次通过 Web 界面设置后会自动保存为加盐 SHA256 哈希值)
+  password: 
   # 用于会话签名加盐的随机密钥 (自动生成)
   secret: 
 

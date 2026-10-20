@@ -1,7 +1,38 @@
 <template>
   <div class="app-layout">
-    <!-- 未登录状态：展示全屏登录界面 -->
-    <div v-if="authEnabled && !isLoggedIn" class="login-wrapper">
+    <!-- 阶段 1：未初始化管理员账号 -> 展示初次设置页面 -->
+    <div v-if="authEnabled && !authInitialized" class="login-wrapper">
+      <div class="login-card">
+        <div class="login-header">
+          <span class="login-logo">🎬</span>
+          <h2>设置管理员账号</h2>
+          <p>初次使用，请设置管理员用户名与访问密码</p>
+        </div>
+        <form @submit.prevent="handleInitAdmin" class="login-form">
+          <div class="form-group">
+            <label>管理员账号:</label>
+            <input v-model="initForm.username" type="text" placeholder="请输入管理员用户名" required autofocus />
+          </div>
+          <div class="form-group">
+            <label>设置密码:</label>
+            <input v-model="initForm.password" type="password" placeholder="请输入密码（至少5位）" required />
+          </div>
+          <div class="form-group">
+            <label>确认密码:</label>
+            <input v-model="initForm.confirm_password" type="password" placeholder="请再次输入密码" required />
+          </div>
+          <div v-if="initError" class="login-error-tip">
+            ❌ {{ initError }}
+          </div>
+          <button type="submit" class="btn btn-primary login-btn" :disabled="submittingInit">
+            {{ submittingInit ? '正在设置...' : '完成设置并进入控制台' }}
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 阶段 2：已初始化管理员但未登录 -> 展示管理员登录界面 -->
+    <div v-else-if="authEnabled && !isLoggedIn" class="login-wrapper">
       <div class="login-card">
         <div class="login-header">
           <span class="login-logo">🎬</span>
@@ -11,11 +42,11 @@
         <form @submit.prevent="handleLogin" class="login-form">
           <div class="form-group">
             <label>管理员账号:</label>
-            <input v-model="loginForm.username" type="text" placeholder="默认 admin" required autofocus />
+            <input v-model="loginForm.username" type="text" placeholder="请输入管理员账号" required autofocus />
           </div>
           <div class="form-group">
-            <label>管理员密码:</label>
-            <input v-model="loginForm.password" type="password" placeholder="默认 adminadmin" required />
+            <label>登录密码:</label>
+            <input v-model="loginForm.password" type="password" placeholder="请输入密码" required />
           </div>
           <div v-if="loginError" class="login-error-tip">
             ❌ {{ loginError }}
@@ -27,7 +58,7 @@
       </div>
     </div>
 
-    <!-- 已登录状态：展示主控制台 -->
+    <!-- 阶段 3：已登录状态 -> 展示完整管理控制台 -->
     <template v-else>
       <!-- 顶部导航 -->
       <header class="header">
@@ -322,8 +353,14 @@
 import { ref, onMounted, nextTick } from 'vue'
 
 const authEnabled = ref(true)
+const authInitialized = ref(true)
 const isLoggedIn = ref(false)
-const currentUsername = ref('admin')
+const currentUsername = ref('')
+
+const submittingInit = ref(false)
+const initError = ref('')
+const initForm = ref({ username: '', password: '', confirm_password: '' })
+
 const loggingIn = ref(false)
 const loginError = ref('')
 const loginForm = ref({ username: '', password: '' })
@@ -382,18 +419,63 @@ async function apiFetch(url, options = {}) {
   return res
 }
 
-// 检查登录状态
+// 检查认证状态
 async function checkAuth() {
   try {
     const res = await apiFetch('/api/auth/me')
     const json = await res.json()
     if (json.success) {
       authEnabled.value = json.data.auth_enabled
+      authInitialized.value = json.data.initialized
       isLoggedIn.value = json.data.logged_in
       if (json.data.username) currentUsername.value = json.data.username
     }
   } catch (e) {
     isLoggedIn.value = false
+  }
+}
+
+// 初次设置管理员账号
+async function handleInitAdmin() {
+  if (!initForm.value.username.trim()) {
+    initError.value = '请输入管理员账号'
+    return
+  }
+  if (initForm.value.password.length < 5) {
+    initError.value = '密码长度不能少于 5 位'
+    return
+  }
+  if (initForm.value.password !== initForm.value.confirm_password) {
+    initError.value = '两次输入的密码不一致'
+    return
+  }
+
+  submittingInit.value = true
+  initError.value = ''
+  try {
+    const res = await fetch('/api/auth/init', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: initForm.value.username.trim(),
+        password: initForm.value.password.trim()
+      })
+    })
+    const json = await res.json()
+    if (json.success) {
+      localStorage.setItem('admin_token', json.data.token)
+      currentUsername.value = json.data.username
+      authInitialized.value = true
+      isLoggedIn.value = true
+      initForm.value = { username: '', password: '', confirm_password: '' }
+      await initDashboard()
+    } else {
+      initError.value = json.error || '初始化设置失败'
+    }
+  } catch (e) {
+    initError.value = '请求失败: ' + e.message
+  } finally {
+    submittingInit.value = false
   }
 }
 
@@ -741,7 +823,7 @@ onMounted(async () => {
   flex-direction: column;
 }
 
-/* 登录界面样式 */
+/* 登录/初始化界面样式 */
 .login-wrapper {
   flex: 1;
   display: flex;
@@ -756,7 +838,7 @@ onMounted(async () => {
   border: 1px solid #334155;
   border-radius: 12px;
   width: 100%;
-  max-width: 400px;
+  max-width: 420px;
   padding: 32px;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4);
 }

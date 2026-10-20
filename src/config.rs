@@ -19,9 +19,11 @@ pub struct AppConfig {
 pub struct AuthConfig {
     #[serde(default = "default_auth_enabled")]
     pub enabled: bool,
-    #[serde(default = "default_admin_username")]
+    #[serde(default)]
+    pub initialized: bool,
+    #[serde(default)]
     pub username: String,
-    #[serde(default = "default_admin_password")]
+    #[serde(default)]
     pub password: String,
     #[serde(default = "default_secret")]
     pub secret: String,
@@ -31,8 +33,9 @@ impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            username: default_admin_username(),
-            password: default_admin_password(),
+            initialized: false,
+            username: String::new(),
+            password: String::new(),
             secret: default_secret(),
         }
     }
@@ -40,14 +43,6 @@ impl Default for AuthConfig {
 
 fn default_auth_enabled() -> bool {
     true
-}
-
-fn default_admin_username() -> String {
-    "admin".to_string()
-}
-
-fn default_admin_password() -> String {
-    "adminadmin".to_string()
 }
 
 fn default_secret() -> String {
@@ -92,9 +87,8 @@ fn default_wait_time() -> f64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StrmMode {
     /// 专为百度网盘等 302 挂载优化：写入 AList 的 /d/... 直链，带 sign 校验
-    /// 播放时 AList 实时 302 重定向到百度网盘临时直链，永不失效
     AlistURL,
-    /// 直接获取上游 raw_url 写入 strm（短效直链不推荐）
+    /// 直接获取上游 raw_url 写入 strm
     RawURL,
 }
 
@@ -174,10 +168,17 @@ impl ConfigStore {
         let file_path = path.into();
         let app_config = if file_path.exists() {
             match std::fs::read_to_string(&file_path) {
-                Ok(content) => serde_yaml::from_str(&content).unwrap_or_else(|e| {
-                    eprintln!("解析配置文件失败: {:?}，使用默认配置", e);
-                    AppConfig::default()
-                }),
+                Ok(content) => {
+                    let mut cfg: AppConfig = serde_yaml::from_str(&content).unwrap_or_else(|e| {
+                        eprintln!("解析配置文件失败: {:?}，使用默认配置", e);
+                        AppConfig::default()
+                    });
+                    // 如果配置文件里已有非空账号和密码，自动标记为已初始化
+                    if !cfg.auth.username.trim().is_empty() && !cfg.auth.password.trim().is_empty() {
+                        cfg.auth.initialized = true;
+                    }
+                    cfg
+                }
                 Err(e) => {
                     eprintln!("读取配置文件失败: {:?}，使用默认配置", e);
                     AppConfig::default()

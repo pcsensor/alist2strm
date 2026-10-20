@@ -60,6 +60,7 @@ pub fn create_api_routes(state: AppState) -> Router {
     let public_routes = Router::new()
         .route("/api/status", get(get_status))
         .route("/api/auth/me", get(get_auth_me))
+        .route("/api/auth/init", post(init_admin_auth))
         .route("/api/auth/login", post(login));
 
     // 受保护接口（必须管理员鉴权）
@@ -97,6 +98,53 @@ async fn get_status() -> impl IntoResponse {
 // ----------------- 认证相关 API -----------------
 
 #[derive(Deserialize)]
+struct InitAuthReq {
+    username: String,
+    password: String,
+}
+
+/// 初次使用时设置管理员账号密码
+async fn init_admin_auth(
+    State(state): State<AppState>,
+    Json(payload): Json<InitAuthReq>,
+) -> Response {
+    let mut cfg = state.config_store.get().await;
+
+    if cfg.auth.initialized {
+        return ApiResponse::err("管理员账号已经设置，禁止重复初始化").into_response();
+    }
+
+    let username = payload.username.trim();
+    if username.is_empty() {
+        return ApiResponse::err("用户名不能为空").into_response();
+    }
+
+    let password = payload.password.trim();
+    if password.len() < 5 {
+        return ApiResponse::err("密码长度不能少于 5 位").into_response();
+    }
+
+    let hashed = hash_password(password, &cfg.auth.secret);
+    cfg.auth.username = username.to_string();
+    cfg.auth.password = hashed;
+    cfg.auth.initialized = true;
+
+    if let Err(e) = state.config_store.update(cfg.clone()).await {
+        return ApiResponse::err(format!("保存管理员账号失败: {}", e)).into_response();
+    }
+
+    let token = state.session_manager.create_token().await;
+    (
+        [(header::SET_COOKIE, format!("auth_token={}; Path=/; HttpOnly; SameSite=Lax", token))],
+        ApiResponse::ok(serde_json::json!({
+            "token": token,
+            "username": cfg.auth.username,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
 struct LoginReq {
     username: String,
     password: String,
@@ -118,6 +166,10 @@ async fn login(
             })),
         )
             .into_response();
+    }
+
+    if !cfg.auth.initialized {
+        return ApiResponse::err("系统尚未初始化管理员账号，请先设置").into_response();
     }
 
     if payload.username.trim() == cfg.auth.username
@@ -145,8 +197,9 @@ async fn get_auth_me(
     if !cfg.auth.enabled {
         return ApiResponse::ok(serde_json::json!({
             "auth_enabled": false,
+            "initialized": true,
             "logged_in": true,
-            "username": "admin",
+            "username": "",
         }));
     }
 
@@ -177,8 +230,9 @@ async fn get_auth_me(
 
     ApiResponse::ok(serde_json::json!({
         "auth_enabled": true,
+        "initialized": cfg.auth.initialized,
         "logged_in": is_logged_in,
-        "username": cfg.auth.username,
+        "username": if is_logged_in { cfg.auth.username.clone() } else { String::new() },
     }))
 }
 
