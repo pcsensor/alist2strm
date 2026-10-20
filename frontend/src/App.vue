@@ -173,7 +173,7 @@
                 </button>
                 
                 <div class="footer-sub-actions">
-                  <button class="btn btn-secondary" @click="openLogs(task.id)">
+                  <button class="btn btn-secondary" @click="openLogs(task)">
                     📜 查看日志
                   </button>
                   <button class="btn btn-secondary" @click="editTask(task)">
@@ -189,23 +189,31 @@
         </section>
 
         <!-- 实时日志终端展示板 -->
-        <section class="logs-section">
+        <section class="logs-section" :class="{ 'log-highlight': logHighlight }">
           <div class="section-header">
             <div class="log-header-left">
               <h2>实时同步日志终端</h2>
               <span class="live-dot"></span>
               <span class="text-muted">SSE 实时流传输</span>
+              <span v-if="logFilter !== 'all'" class="log-filter-tag">{{ taskName(logFilter) }}</span>
             </div>
             <div class="log-actions">
-              <button class="btn btn-secondary btn-sm" @click="logs = []">清空日志</button>
+              <select class="log-filter-select" v-model="logFilter" @change="onLogFilterChange">
+                <option value="all">全部任务</option>
+                <option v-for="t in tasks" :key="t.id" :value="t.id">{{ t.name }}</option>
+              </select>
+              <button class="btn btn-secondary btn-sm" @click="clearLogs">清空日志</button>
             </div>
           </div>
           <div class="terminal" ref="terminalBox">
             <div v-if="logs.length === 0" class="terminal-empty">
-              等待任务触发... 点击上方「立即运行」即可在此查看实时扫描进度。
+              {{ logFilter === 'all'
+                ? '等待任务触发... 点击上方「立即运行」即可在此查看实时扫描进度。'
+                : `「${taskName(logFilter)}」暂无日志，运行一次任务后再来看看。` }}
             </div>
             <div v-for="(item, idx) in logs" :key="idx" class="terminal-line">
-              <span class="terminal-time">[{{ item.time }}]</span>
+              <span v-if="logFilter === 'all' && item.task_id" class="terminal-task">[{{ taskName(item.task_id) }}]</span>
+              <span v-if="item.time" class="terminal-time">[{{ item.time }}]</span>
               <span class="terminal-msg">{{ item.message }}</span>
             </div>
           </div>
@@ -373,6 +381,8 @@ const pwdForm = ref({ old_password: '', new_password: '', confirm_password: '' }
 const appConfig = ref({ alist: {}, tasks: [] })
 const tasks = ref([])
 const logs = ref([])
+const logFilter = ref('all')
+const logHighlight = ref(false)
 const terminalBox = ref(null)
 
 const alistConnected = ref(false)
@@ -727,6 +737,10 @@ async function deleteTask(id) {
     const res = await apiFetch(`/api/tasks/${id}`, { method: 'DELETE' })
     const json = await readJson(res)
     if (json.success) {
+      if (logFilter.value === id) {
+        logFilter.value = 'all'
+        logs.value = []
+      }
       loadTasks()
     }
   } catch (e) {
@@ -753,9 +767,74 @@ async function triggerTask(id) {
   }
 }
 
-function openLogs(id) {
-  const el = document.querySelector('.logs-section')
-  if (el) el.scrollIntoView({ behavior: 'smooth' })
+// 任务 id -> 名称，日志里只存 id
+function taskName(id) {
+  const t = tasks.value.find(x => x.id === id)
+  return t ? t.name : (id ? id.slice(0, 8) : '未知任务')
+}
+
+function scrollTerminal() {
+  nextTick(() => {
+    if (terminalBox.value) {
+      terminalBox.value.scrollTop = terminalBox.value.scrollHeight
+    }
+  })
+}
+
+// 从后端读取该任务的历史日志
+async function loadTaskLogs(id) {
+  try {
+    const res = await apiFetch(`/api/tasks/${id}/logs?limit=500`)
+    const json = await readJson(res)
+    if (json.success) {
+      logs.value = (json.data.logs || []).map(l => ({ ...l, task_id: id }))
+      scrollTerminal()
+    }
+  } catch (e) {
+    console.error('加载任务日志失败:', e)
+  }
+}
+
+async function onLogFilterChange() {
+  logs.value = []
+  if (logFilter.value !== 'all') {
+    await loadTaskLogs(logFilter.value)
+  }
+  scrollTerminal()
+}
+
+// 点某个任务的“查看日志”：切到该任务的日志并滚动定位
+function openLogs(task) {
+  logFilter.value = task.id
+  logs.value = []
+  loadTaskLogs(task.id)
+
+  nextTick(() => {
+    const el = document.querySelector('.logs-section')
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+  logHighlight.value = true
+  setTimeout(() => { logHighlight.value = false }, 1500)
+}
+
+// 清空当前筛选范围内的日志（全部或单个任务）
+async function clearLogs() {
+  const scope = logFilter.value
+  const label = scope === 'all' ? '所有任务' : `「${taskName(scope)}」`
+  if (!confirm(`确定清空${label}的日志吗？`)) return
+
+  try {
+    const url = scope === 'all' ? '/api/tasks/logs' : `/api/tasks/${scope}/logs`
+    const res = await apiFetch(url, { method: 'DELETE' })
+    const json = await readJson(res)
+    if (json.success) {
+      logs.value = []
+    } else {
+      alert('清空失败: ' + json.error)
+    }
+  } catch (e) {
+    alert('清空失败: ' + e.message)
+  }
 }
 
 // 连接 SSE 实时接收进度和日志
@@ -769,13 +848,11 @@ function initSSE() {
     try {
       const data = JSON.parse(event.data)
       if (data.type === 'Log') {
+        // 只把当前筛选范围内的日志放进终端
+        if (logFilter.value !== 'all' && data.data.task_id !== logFilter.value) return
         logs.value.push(data.data)
         if (logs.value.length > 500) logs.value.shift()
-        nextTick(() => {
-          if (terminalBox.value) {
-            terminalBox.value.scrollTop = terminalBox.value.scrollHeight
-          }
-        })
+        scrollTerminal()
       } else if (data.type === 'StatusChanged') {
         const payload = data.data
         const t = tasks.value.find(x => x.id === payload.task_id)
@@ -1205,6 +1282,41 @@ onMounted(async () => {
   border: 1px solid #334155;
   border-radius: 10px;
   padding: 18px;
+  transition: box-shadow 0.4s ease;
+}
+
+.log-highlight {
+  box-shadow: 0 0 0 2px #3b82f6, 0 0 24px rgba(59, 130, 246, 0.35);
+}
+
+.log-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-filter-select {
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  max-width: 220px;
+}
+
+.log-filter-tag {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.terminal-task {
+  color: #f59e0b;
+  margin-right: 6px;
 }
 
 .log-header-left {

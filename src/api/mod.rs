@@ -1,12 +1,12 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::header,
     middleware,
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Json, Response,
     },
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 use futures_util::stream::Stream;
@@ -70,6 +70,11 @@ pub fn create_api_routes(state: AppState) -> Router {
         .route("/api/config", get(get_config).post(update_config))
         .route("/api/alist/test", post(test_alist))
         .route("/api/tasks", get(list_tasks).post(create_task))
+        .route("/api/tasks/logs", delete(clear_all_task_logs))
+        .route(
+            "/api/tasks/:id/logs",
+            get(get_task_logs).delete(clear_task_logs),
+        )
         .route(
             "/api/tasks/:id",
             put(update_task).delete(delete_task),
@@ -436,8 +441,46 @@ async fn delete_task(
         return ApiResponse::err(e);
     }
 
+    state.task_manager.log_store().clear(&id);
     let _ = state.task_manager.reload_scheduler().await;
     ApiResponse::ok("删除成功")
+}
+
+#[derive(Deserialize)]
+struct TaskLogQuery {
+    limit: Option<usize>,
+}
+
+async fn get_task_logs(
+    Path(id): Path<String>,
+    Query(query): Query<TaskLogQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(500).clamp(1, 2000);
+    let store = state.task_manager.log_store().clone();
+    let task_id = id.clone();
+
+    match tokio::task::spawn_blocking(move || store.read_tail(&id, limit)).await {
+        Ok((logs, truncated)) => ApiResponse::ok(serde_json::json!({
+            "task_id": task_id,
+            "logs": logs,
+            "truncated": truncated,
+        })),
+        Err(e) => ApiResponse::err(format!("读取任务日志失败: {}", e)),
+    }
+}
+
+async fn clear_task_logs(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    state.task_manager.log_store().clear(&id);
+    ApiResponse::ok("日志已清空")
+}
+
+async fn clear_all_task_logs(State(state): State<AppState>) -> impl IntoResponse {
+    state.task_manager.log_store().clear_all();
+    ApiResponse::ok("所有任务日志已清空")
 }
 
 async fn run_task_manually(

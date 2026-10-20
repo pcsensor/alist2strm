@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 use crate::alist::AlistClient;
 use crate::config::{ConfigStore, StrmTaskConfig};
 use crate::strm::{StrmEngine, TaskStats};
+use crate::tasklog::TaskLogStore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -75,17 +76,41 @@ pub struct TaskManager {
     runtime_states: Arc<RwLock<HashMap<String, TaskRuntimeInfo>>>,
     event_sender: broadcast::Sender<TaskEvent>,
     scheduler: Arc<RwLock<Option<JobScheduler>>>,
+    log_store: TaskLogStore,
 }
 
 impl TaskManager {
     pub fn new(config_store: ConfigStore) -> Self {
         let (tx, _) = broadcast::channel(1000);
+        let log_dir = config_store
+            .file_path
+            .parent()
+            .map(|p| p.join("logs"))
+            .unwrap_or_else(|| std::path::PathBuf::from("logs"));
+
         Self {
             config_store,
             runtime_states: Arc::new(RwLock::new(HashMap::new())),
             event_sender: tx,
             scheduler: Arc::new(RwLock::new(None)),
+            log_store: TaskLogStore::new(log_dir),
         }
+    }
+
+    pub fn log_store(&self) -> &TaskLogStore {
+        &self.log_store
+    }
+
+    /// 启动日志清理任务：启动时执行一次，之后每 6 小时清理一次过期/超量日志
+    pub fn start_log_maintenance(self: &Arc<Self>) {
+        let store = self.log_store.clone();
+        tokio::spawn(async move {
+            loop {
+                let store = store.clone();
+                let _ = tokio::task::spawn_blocking(move || store.cleanup()).await;
+                tokio::time::sleep(crate::tasklog::CLEANUP_INTERVAL).await;
+            }
+        });
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<TaskEvent> {
@@ -168,9 +193,14 @@ impl TaskManager {
 
         let tx = self.event_sender.clone();
         let tid_for_log = task_id.clone();
+        let log_store = self.log_store.clone();
+
+        // 先写运行分隔线，再开始记录
+        self.log_store.begin_run(&task_id);
 
         let log_cb = move |msg: String| {
             let time_str = Local::now().format("%H:%M:%S").to_string();
+            log_store.append(&tid_for_log, &time_str, &msg);
             let _ = tx.send(TaskEvent::Log {
                 task_id: tid_for_log.clone(),
                 time: time_str,

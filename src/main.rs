@@ -4,6 +4,7 @@ mod auth;
 mod config;
 mod strm;
 mod task;
+mod tasklog;
 mod web;
 
 use clap::Parser;
@@ -50,6 +51,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = task_manager.reload_scheduler().await {
         tracing::warn!("启动定时任务调度器失败: {}", e);
     }
+
+    // 定期清理过期任务日志
+    task_manager.start_log_maintenance();
 
     let state = api::AppState {
         config_store,
